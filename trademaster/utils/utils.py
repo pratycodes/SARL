@@ -2,10 +2,11 @@ import inspect
 import os
 import re
 
-import mmcv
-from mmcv import Config
-from mmcv.utils import Registry
-from mmcv.utils import print_log
+import mmengine
+from mmengine.config import Config
+from mmengine.registry import Registry
+from mmengine.logging import print_log
+
 import numpy as np
 import prettytable
 import random
