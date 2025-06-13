@@ -2,6 +2,7 @@ from __future__ import annotations
 import torch
 import sys
 from pathlib import Path
+import random
 
 ROOT = str(Path(__file__).resolve().parents[2])
 sys.path.append(ROOT)
@@ -54,8 +55,8 @@ class PortfolioManagementSARLEnvironment(Environments):
 
         ##############################################################
         from trademaster.nets import mLSTMClf
-        self.network_dict = torch.load(get_attr(pretrained, "sarl_encoder", None))
-        self.net = mLSTMClf(n_features = len(self.tech_indicator_list), layer_num = 1, n_hidden = 128, tic_number = len(self.tic_list)).cuda()
+        self.network_dict = torch.load(get_attr(pretrained, "sarl_encoder", None), map_location=torch.device('cpu'))
+        self.net = mLSTMClf(n_features = len(self.tech_indicator_list), layer_num = 1, n_hidden = 128, tic_number = len(self.tic_list)).to("cpu")
         self.net.load_state_dict(self.network_dict)
         ##############################################################
 
@@ -84,7 +85,7 @@ class PortfolioManagementSARLEnvironment(Environments):
                 df_information).float().unsqueeze(0)
             X.append(df_information)
         X = torch.cat(X, dim=0)
-        X = X.unsqueeze(0).cuda()
+        X = X.unsqueeze(0).to("cpu")
         y = self.net(X)
         y = y.cpu().detach().squeeze().numpy()
         y = y.tolist()
@@ -99,7 +100,12 @@ class PortfolioManagementSARLEnvironment(Environments):
         self.transaction_cost_memory = []
         self.test_id = 'agent'
 
-    def reset(self):
+    def reset(self, seed=None, options=None):
+        if seed is not None:
+            np.random.seed(seed)
+            random.seed(seed)
+            torch.manual_seed(seed)
+
         self.asset_memory = [self.initial_amount]
         self.day = self.length_day
         self.data = self.df.loc[self.day, :]
@@ -109,28 +115,30 @@ class PortfolioManagementSARLEnvironment(Environments):
             self.data[tech].values.tolist()
             for tech in self.tech_indicator_list
         ]).reshape(-1).tolist()
+
         X = []
         for tic in tic_list:
             df_tic = self.df[self.df.tic == tic]
             df_information = df_tic[self.day - self.length_day:self.day][
                 self.tech_indicator_list].to_numpy()
-            df_information = torch.from_numpy(
-                df_information).float().unsqueeze(0)
+            df_information = torch.from_numpy(df_information).float().unsqueeze(0)
             X.append(df_information)
         X = torch.cat(X, dim=0)
-        X = X.unsqueeze(0).cuda()
+        X = X.unsqueeze(0).to("cpu")
+
         y = self.net(X)
         y = y.cpu().detach().squeeze().numpy().tolist()
         self.state = np.array(s_market + y)
+
         self.terminal = False
         self.portfolio_value = self.initial_amount
         self.asset_memory = [self.initial_amount]
         self.portfolio_return_memory = [0]
-        self.weights_memory = [[1 / self.action_space_shape] *
-                               self.action_space_shape]
+        self.weights_memory = [[1 / self.action_space_shape] * self.action_space_shape]
         self.date_memory = [self.data.date.unique()[0]]
         self.transaction_cost_memory = []
-        return self.state
+
+        return self.state, {}
 
     def step(self, actions):
         # make judgement about whether our data is running out
@@ -202,7 +210,7 @@ class PortfolioManagementSARLEnvironment(Environments):
                     df_information).float().unsqueeze(0)
                 X.append(df_information)
             X = torch.cat(X, dim=0)
-            X = X.unsqueeze(0).cuda()
+            X = X.unsqueeze(0).to("cpu")
             y = self.net(X)
             y = y.cpu().detach().squeeze().numpy().tolist()
             self.state = np.array(s_market + y)
@@ -239,7 +247,7 @@ class PortfolioManagementSARLEnvironment(Environments):
             self.asset_memory.append(new_portfolio_value)
             self.reward = self.reward
 
-        return self.state, self.reward, self.terminal, {"weights_brandnew":weights_brandnew}
+        return self.state, self.reward, self.terminal, False, {"weights_brandnew":weights_brandnew}
 
     def normalization(self, actions):
         # a normalization function not only for actions to transfer into weights but also for the weights of the

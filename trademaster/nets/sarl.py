@@ -36,7 +36,7 @@ class mLSTMClf(Net):
                        nn.LSTM(input_size=n_features,
                                hidden_size=self.n_hidden,
                                num_layers=self.n_layers,
-                               batch_first=True).cuda()
+                               batch_first=True).to("cpu")
                                        ] * tic_number)
         self.linear = nn.Linear(self.n_hidden * tic_number * 2, tic_number)
 
@@ -49,7 +49,7 @@ class mLSTMClf(Net):
             ch_out.append(h.squeeze(0))
             ch_out.append(c.squeeze(0))
 
-        ch_out = torch.cat(ch_out, dim=1).cuda()
+        ch_out = torch.cat(ch_out, dim=1).to("cpu")
         # print(ch_out.shape)
         y = self.linear(ch_out)
         y = torch.sigmoid(y)

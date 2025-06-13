@@ -29,6 +29,7 @@ def set_seed(random_seed):
     torch.backends.cudnn.benckmark = False
     torch.backends.cudnn.deterministic = True
     torch.set_default_dtype(torch.float32)
+    
 def print_metrics(stats):
     table = prettytable.PrettyTable()
     # table.add_row(['' for _ in range(len(stats))])

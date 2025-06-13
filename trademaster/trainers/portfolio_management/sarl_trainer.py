@@ -1,272 +1,279 @@
 from pathlib import Path
-
 ROOT = Path(__file__).resolve().parents[3]
+
 from ..custom import Trainer
 from ..builder import TRAINERS
-from trademaster.utils import get_attr, save_object, load_object,create_radar_score_baseline, calculate_radar_score, plot_radar_chart,plot_metric_against_baseline
+from trademaster.utils import get_attr, save_object, load_object, create_radar_score_baseline, calculate_radar_score, plot_radar_chart, plot_metric_against_baseline
+
 import os
-
-import ray
-from ray.tune.registry import register_env
-
-from trademaster.environments.portfolio_management.sarl_environment import PortfolioManagementSARLEnvironment
+import random
+import logging
 import pandas as pd
 import numpy as np
-import random
 import torch
-import logging
-
-
-def env_creator(env_name):
-    if env_name == 'portfolio_management_sarl':
-        env = PortfolioManagementSARLEnvironment
-    else:
-        raise NotImplementedError
-    return env
-
-
-def select_algorithms(alg_name):
-    alg_name = alg_name.upper()
-    #if alg_name == "A2C":
-        #from ray.rllib.agents.a3c.a2c import A2CTrainer as trainer
-    #elif alg_name == "DDPG":
-        #from ray.rllib.agents.ddpg.ddpg import DDPGTrainer as trainer
-    #elif alg_name == 'PG':
-        #from ray.rllib.algorithms. import PGTrainer as trainer
-    if alg_name == 'PPO':
-        from ray.rllib.algorithms.ppo import PPO as trainer
-    elif alg_name == 'SAC':
-        from ray.rllib.algorithms.sac import SAC as trainer
-    #elif alg_name == 'TD3':
-        #from ray.rllib.agents.ddpg.ddpg import TD3Trainer as trainer
-    else:
-        ray.get(f.remote(alg_name))
-        ray.get(f.remote(alg_name == "A2C"))
-        ray.get(f.remote(type(alg_name)))
-        raise NotImplementedError
-    return trainer
+import ray
+from ray.tune.registry import register_env
+from ray.rllib.algorithms.sac import SACConfig
+from trademaster.environments.portfolio_management.sarl_environment import PortfolioManagementSARLEnvironment
 
 logging.disable(logging.INFO)
 logging.disable(logging.WARNING)
 ray.init(ignore_reinit_error=True)
-register_env("portfolio_management_sarl", lambda config: env_creator("portfolio_management_sarl")(config))
+
+def env_creator(env_config):
+    return PortfolioManagementSARLEnvironment(env_config)
+register_env("portfolio_management_sarl", env_creator)
+
+from ray.tune.registry import register_env
+from trademaster.environments.portfolio_management import PortfolioManagementSARLEnvironment  # or your path
+
+register_env("portfolio_management_sarl", lambda config: PortfolioManagementSARLEnvironment(config))
 
 
-@ray.remote
-def f(msg):
-    logging.basicConfig(format='%(message)s',level=logging.DEBUG)
-    logging.info(msg)
 
 @TRAINERS.register_module()
 class PortfolioManagementSARLTrainer(Trainer):
     def __init__(self, **kwargs):
-        super(PortfolioManagementSARLTrainer, self).__init__()
+        super().__init__()
 
         self.device = get_attr(kwargs, "device", None)
-        self.configs = get_attr(kwargs, "configs", None)
-        self.agent_name = get_attr(kwargs, "agent_name", "ppo")
+        self.configs = get_attr(kwargs, "configs", {})
+        self.agent_name = get_attr(kwargs, "agent_name", "SAC").upper()
         self.epochs = get_attr(kwargs, "epochs", 20)
         self.dataset = get_attr(kwargs, "dataset", None)
-        self.work_dir = get_attr(kwargs, "work_dir", None)
-        self.work_dir = os.path.join(ROOT, self.work_dir)
+        self.work_dir = os.path.join(ROOT, get_attr(kwargs, "work_dir", ""))
         self.seeds_list = get_attr(kwargs, "seeds_list", (12345,))
         self.random_seed = random.choice(self.seeds_list)
         self.if_remove = get_attr(kwargs, "if_remove", False)
         self.num_threads = int(get_attr(kwargs, "num_threads", 8))
-
-        self.trainer_name = select_algorithms(self.agent_name)
-        self.configs["env"] = PortfolioManagementSARLEnvironment
-        self.configs["env_config"] = dict(dataset=self.dataset, task="train")
         self.verbose = get_attr(kwargs, "verbose", False)
 
+        self.trainer_cls = self.select_algorithm(self.agent_name)
+        self.setup_rllib_config()
         self.init_before_training()
+
+    def select_algorithm(self, alg_name):
+        if alg_name == "SAC":
+            from ray.rllib.algorithms.sac import SAC as trainer
+        else:
+            raise NotImplementedError(f"Algorithm {alg_name} not supported.")
+        return trainer
+
+    def setup_rllib_config(self):
+        if self.dataset is None:
+            raise ValueError("Dataset is required but not provided")
+
+        env_config = {
+            "dataset": self.dataset,
+            "task": "train"
+        }
+
+        self.config = (
+        SACConfig()
+        .environment(env="portfolio_management_sarl", env_config=env_config)
+        .framework("torch")
+        .env_runners(num_env_runners=1)
+        .resources(num_gpus=1 if torch.cuda.is_available() else 0)
+        .training(
+            gamma=0.99,
+            tau=0.005,
+            train_batch_size=256,
+            n_step=1,
+            target_entropy="auto",
+            actor_lr=3e-4,
+            critic_lr=3e-4,
+            alpha_lr=3e-4
+        )
+        .debugging(seed=self.random_seed)
+    )
+
+    # ✅ Corrected: use self.config instead of undefined `config`
+        self.config.model["Q_model"] = {
+        "fcnet_hiddens": [256, 256],
+        "fcnet_activation": "relu",
+        }
+        self.config.model["policy_model"] = {
+        "fcnet_hiddens": [256, 256],
+        "fcnet_activation": "relu",
+        }
+
+        if self.configs:
+            self.config.update_from_dict(self.configs)
+
+    # ✅ Build the trainer instance from config
+        self.trainer = self.config.build()
+
 
     def init_before_training(self):
         random.seed(self.random_seed)
-        torch.cuda.manual_seed(self.random_seed)
+        torch.manual_seed(self.random_seed)
         torch.cuda.manual_seed_all(self.random_seed)
         np.random.seed(self.random_seed)
-        torch.manual_seed(self.random_seed)
-        torch.backends.cudnn.benckmark = False
+        torch.backends.cudnn.benchmark = False
         torch.backends.cudnn.deterministic = True
         torch.set_num_threads(self.num_threads)
         torch.set_default_dtype(torch.float32)
 
-        '''remove history'''
         if self.if_remove is None:
-            self.if_remove = bool(input(f"| Arguments PRESS 'y' to REMOVE: {self.work_dir}? ") == 'y')
+            self.if_remove = bool(input(f"| PRESS 'y' to REMOVE: {self.work_dir}? ") == 'y')
+
         if self.if_remove:
             import shutil
             shutil.rmtree(self.work_dir, ignore_errors=True)
             if self.verbose:
-                ray.get(f.remote(f"| Arguments Remove work_dir: {self.work_dir}"))
+                logging.info(f"| Removed work_dir: {self.work_dir}")
         else:
             if self.verbose:
-                ray.get(f.remote(f"| Arguments Keep work_dir: {self.work_dir}"))
-        os.makedirs(self.work_dir, exist_ok=True)
+                logging.info(f"| Keep work_dir: {self.work_dir}")
 
+        os.makedirs(self.work_dir, exist_ok=True)
         self.checkpoints_path = os.path.join(self.work_dir, "checkpoints")
-        if not os.path.exists(self.checkpoints_path):
-            os.makedirs(self.checkpoints_path, exist_ok=True)
+        os.makedirs(self.checkpoints_path, exist_ok=True)
 
     def train_and_valid(self):
-
         valid_score_list = []
         save_dict_list = []
-        self.trainer = self.trainer_name(env="portfolio_management_sarl", config=self.configs)
 
-        for epoch in range(1, self.epochs+1):
-            ray.get(f.remote("Train Episode: [{}/{}]".format(epoch, self.epochs)))
+        self.trainer = self.trainer_cls(config=self.configs.to_dict())
+
+        for epoch in range(1, self.epochs + 1):
+            logging.info(f"Train Episode: [{epoch}/{self.epochs}]")
             self.trainer.train()
 
-            config = dict(dataset=self.dataset, task="valid")
-            self.valid_environment = env_creator("portfolio_management_sarl")(config)
-            ray.get(f.remote("Valid Episode: [{}/{}]".format(epoch, self.epochs)))
-            state = self.valid_environment.reset()
+            valid_config = {"dataset": self.dataset, "task": "valid"}
+            self.valid_environment = env_creator(valid_config)
 
+            logging.info(f"Valid Episode: [{epoch}/{self.epochs}]")
+            state = self.valid_environment.reset()
             episode_reward_sum = 0
-            while True:
-                action = self.trainer.compute_single_action(state)
+            done = False
+            while not done:
+                action = self.trainer.inference().compute_single_action(state)
                 state, reward, done, information = self.valid_environment.step(action)
                 episode_reward_sum += reward
-                if done:
-                    #ray.get(f.remote("Valid Episode Reward Sum: {:04f}".format(episode_reward_sum))
-                    break
+
             save_dict_list.append(information)
-            valid_score_list.append(information["sharpe_ratio"])
-            ray.get(f.remote(information['table']))
-            checkpoint_path = os.path.join(self.checkpoints_path, "checkpoint-{:05d}.pkl".format(epoch))
-            obj = self.trainer.save_to_object()
-            save_object(obj, checkpoint_path)
+            valid_score_list.append(information.get("sharpe_ratio", 0))
+            logging.info(information.get('table', 'No info table'))
+
+            checkpoint_path = os.path.join(self.checkpoints_path, f"checkpoint-{epoch:05d}.pkl")
+            checkpoint_obj = self.trainer.save_to_object()
+            save_object(checkpoint_obj, checkpoint_path)
 
         max_index = np.argmax(valid_score_list)
-        plot_metric_against_baseline(total_asset=save_dict_list[max_index]['total_assets'],
-                                     buy_and_hold=None, alg='SARL',
-                                     task='valid', color='darkcyan', save_dir=self.work_dir)
-        obj = load_object(os.path.join(self.checkpoints_path, "checkpoint-{:05d}.pkl".format(max_index+1)))
-        save_object(obj, os.path.join(self.checkpoints_path, "best.pkl"))
-        ray.shutdown()
+        best_info = save_dict_list[max_index]
+
+        plot_metric_against_baseline(
+            total_asset=best_info['total_assets'],
+            buy_and_hold=None,
+            alg='SARL',
+            task='valid',
+            color='darkcyan',
+            save_dir=self.work_dir
+        )
+
+        best_checkpoint = os.path.join(self.checkpoints_path, f"checkpoint-{max_index+1:05d}.pkl")
+        best_obj = load_object(best_checkpoint)
+        save_object(best_obj, os.path.join(self.checkpoints_path, "best.pkl"))
 
     def test(self):
-        self.trainer = self.trainer_name(env="portfolio_management_sarl", config=self.configs)
-
+        self.trainer = self.trainer_cls(config=self.configs.to_dict())
         obj = load_object(os.path.join(self.checkpoints_path, "best.pkl"))
         self.trainer.restore_from_object(obj)
 
-        config = dict(dataset=self.dataset, task="test")
-        self.test_environment = env_creator("portfolio_management_sarl")(config)
-        ray.get(f.remote("Test Best Episode"))
+        test_config = {"dataset": self.dataset, "task": "test"}
+        self.test_environment = env_creator(test_config)
+
+        logging.info("Test Best Episode")
         state = self.test_environment.reset()
         episode_reward_sum = 0
-        while True:
-            action = self.trainer.compute_single_action(state)
+        done = False
+        while not done:
+            action = self.trainer.inference().compute_single_action(state)
             state, reward, done, sharpe = self.test_environment.step(action)
             episode_reward_sum += reward
             if done:
-                plot_metric_against_baseline(total_asset=sharpe['total_assets'],
-                                             buy_and_hold=None, alg='SARL',
-                                             task='test', color='darkcyan', save_dir=self.work_dir)
-                # ray.get(f.remote("Test Best Episode Reward Sum: {:04f}".format(episode_reward_sum))
+                plot_metric_against_baseline(
+                    total_asset=sharpe['total_assets'],
+                    buy_and_hold=None,
+                    alg='SARL',
+                    task='test',
+                    color='darkcyan',
+                    save_dir=self.work_dir
+                )
                 break
 
-        ray.get(f.remote(sharpe['table']))
+        logging.info(sharpe.get('table', 'No table info'))
+
         rewards = self.test_environment.save_asset_memory()
         assets = rewards["total assets"].values
         df_return = self.test_environment.save_portfolio_return_memory()
         daily_return = df_return.daily_return.values
-        df = pd.DataFrame()
-        df["daily_return"] = daily_return
-        df["total assets"] = assets
+
+        df = pd.DataFrame({
+            "daily_return": daily_return,
+            "total assets": assets
+        })
         df.to_csv(os.path.join(self.work_dir, "test_result.csv"), index=False)
 
-    def dynamics_test(self,test_dynamic,cfg):
-        self.trainer = self.trainer_name(env="portfolio_management_sarl", config=self.configs)
+    def dynamics_test(self, test_dynamic, cfg):
+        self.trainer = self.trainer_cls(config=self.configs.to_dict())
         obj = load_object(os.path.join(self.checkpoints_path, "best.pkl"))
         self.trainer.restore_from_object(obj)
 
-        test_dynamic_environments = []
+        test_dynamic_envs = []
         for i, path in enumerate(self.dataset.test_dynamic_paths):
-            config = dict(dataset=self.dataset, task="test_dynamic",test_dynamic=test_dynamic,dynamics_test_path=path,task_index=i,work_dir=cfg.work_dir)
-            test_dynamic_environments.append(env_creator("portfolio_management_sarl")(config))
-        # for i,env in enumerate(test_dynamic_environments):
-        #     state = env.reset()
-        #     done = False
-        #     while not done:
-        #         action = self.trainer.compute_single_action(state)
-        #         state, reward, done, sharpe = env.step(action)
-        #     rewards = env.save_asset_memory()
-        #     assets = rewards["total assets"].values
-        #     df_return = env.save_portfolio_return_memory()
-        #     daily_return = df_return.daily_return.values
-        #     df = pd.DataFrame()
-        #     df["daily_return"] = daily_return
-        #     df["total assets"] = assets
-        #     df.to_csv(os.path.join(self.work_dir, "test_dynamic_result"+"style_"+str(test_dynamic)+"_part_"+str(i)+".csv"), index=False)
-
-
+            config = {
+                "dataset": self.dataset,
+                "task": "test_dynamic",
+                "test_dynamic": test_dynamic,
+                "dynamics_test_path": path,
+                "task_index": i,
+                "work_dir": cfg.work_dir,
+            }
+            test_dynamic_envs.append(env_creator(config))
 
         def Average_holding(states, env, weights_brandnew):
             if weights_brandnew is None:
-                action = [0] + [1 / env.stock_dim for _ in range(env.stock_dim)]
-                return action
-            else:
-                return weights_brandnew
+                return [0] + [1 / env.stock_dim] * env.stock_dim
+            return weights_brandnew
+
         def Do_Nothing(states, env):
-            return [1] + [0 for _ in range(env.stock_dim)]
+            return [1] + [0] * env.stock_dim
 
-        daily_return_list = []
-        daily_return_list_Average_holding = []
-        daily_return_list_Do_Nothing = []
-
-        def test_single_env(this_env,policy,policy_id=None):
-            this_env.test_id = policy_id
-            state = this_env.reset()
+        def test_single_env(env, policy, policy_id=None):
+            env.test_id = policy_id
+            state = env.reset()
             done = False
-            weights_brandnew=None
+            weights_brandnew = None
             while not done:
-                if policy_id=="Average_holding":
-                    action = policy(state,this_env,weights_brandnew)
-                elif policy_id=='Do_Nothing':
-                    action = policy(state, this_env)
+                if policy_id == "Average_holding":
+                    action = policy(state, env, weights_brandnew)
+                elif policy_id == "Do_Nothing":
+                    action = policy(state, env)
                 else:
                     action = policy(state)
-                # action = self.trainer.compute_single_action(state)
-                state, reward, done, return_dict = this_env.step(action)
-                if done:
-                    break
-                weights_brandnew = return_dict["weights_brandnew"]
-            rewards = this_env.save_asset_memory()
+                state, reward, done, info = env.step(action)
+                weights_brandnew = info.get("weights_brandnew", None)
+            rewards = env.save_asset_memory()
             assets = rewards["total assets"].values
-            df_return = this_env.save_portfolio_return_memory()
+            df_return = env.save_portfolio_return_memory()
             daily_return = df_return.daily_return.values
-            df = pd.DataFrame()
-            df["daily_return"] = daily_return
-            df["total assets"] = assets
-            df.to_csv(os.path.join(self.work_dir, "test_dynamic_result"+"style_"+str(test_dynamic)+"_part_"+str(i)+".csv"), index=False)
+            df = pd.DataFrame({
+                "daily_return": daily_return,
+                "total assets": assets
+            })
+            df.to_csv(os.path.join(self.work_dir, f"test_dynamic_result_style_{test_dynamic}_part_{env.test_id}.csv"), index=False)
             return daily_return
 
-        for i,env in enumerate(test_dynamic_environments):
-            #test agent
-            daily_return_list.extend(test_single_env(env,self.trainer.compute_single_action,'agent'))
-            #test Average_holding
-            daily_return_list_Average_holding.extend(test_single_env(env,Average_holding,'Average_holding'))
-            #test Do_Nothing
-            daily_return_list_Do_Nothing.extend(test_single_env(env,Do_Nothing,'Do_Nothing'))
-        metric_path = 'metric_' + str("test_dynamic") + '_' + str(
-            cfg.data.test_dynamic)
-        metrics_sigma_dict, zero_metrics = create_radar_score_baseline(cfg.work_dir, metric_path,
-                                                                       zero_score_id='Do_Nothing',
-                                                                       fifty_score_id='Average_holding')
-        test_metrics_scores_dict = calculate_radar_score(cfg.work_dir, metric_path, 'agent', metrics_sigma_dict,
-                                                         zero_metrics)
-        radar_plot_path = cfg.work_dir
-        # 'metric_' + str(self.task) + '_' + str(self.test_dynamic) + '_' + str(id) + '_radar.png')
-        # ray.get(f.remote('test_metrics_scores are: ', test_metrics_scores_dict)
-        # ray.get(f.remote('test_metrics_scores are:')
-        # print_metrics(test_metrics_scores_dict)
-        plot_radar_chart(test_metrics_scores_dict, 'radar_plot_agent_' + str(test_dynamic) + '.png',
-                         radar_plot_path)
-        # ray.get(f.remote('win rate is: ', sum(float(r) > 0 for r in daily_return_list) / len(daily_return_list))
-        # ray.get(f.remote('Random_buy win rate is: ',
-        #       sum(float(r) > 0 for r in daily_return_list_Average_holding) / len(daily_return_list_Average_holding))
-        ray.get(f.remote("dynamics test end"))
+        for i, env in enumerate(test_dynamic_envs):
+            test_single_env(env, self.trainer.compute_single_action, 'agent')
+            test_single_env(env, Average_holding, 'Average_holding')
+            test_single_env(env, Do_Nothing, 'Do_Nothing')
+
+        metric_path = f'metric_test_dynamic_{cfg.data.test_dynamic}'
+        metrics_sigma_dict, zero_metrics = create_radar_score_baseline(cfg.work_dir, metric_path, 'Do_Nothing', 'Average_holding')
+        test_metrics_scores_dict = calculate_radar_score(cfg.work_dir, metric_path, 'agent', metrics_sigma_dict, zero_metrics)
+        plot_radar_chart(test_metrics_scores_dict, f'radar_plot_agent_{test_dynamic}.png', cfg.work_dir)
+
+        logging.info("Dynamics test completed.")
