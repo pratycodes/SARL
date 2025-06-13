@@ -5,8 +5,10 @@ from ..custom import Trainer
 from ..builder import TRAINERS
 from trademaster.utils import get_attr, save_object, load_object,create_radar_score_baseline, calculate_radar_score, plot_radar_chart,plot_metric_against_baseline
 import os
+
 import ray
 from ray.tune.registry import register_env
+
 from trademaster.environments.portfolio_management.sarl_environment import PortfolioManagementSARLEnvironment
 import pandas as pd
 import numpy as np
@@ -25,18 +27,18 @@ def env_creator(env_name):
 
 def select_algorithms(alg_name):
     alg_name = alg_name.upper()
-    if alg_name == "A2C":
-        from ray.rllib.agents.a3c.a2c import A2CTrainer as trainer
-    elif alg_name == "DDPG":
-        from ray.rllib.agents.ddpg.ddpg import DDPGTrainer as trainer
-    elif alg_name == 'PG':
-        from ray.rllib.agents.pg import PGTrainer as trainer
-    elif alg_name == 'PPO':
-        from ray.rllib.agents.ppo.ppo import PPOTrainer as trainer
+    #if alg_name == "A2C":
+        #from ray.rllib.agents.a3c.a2c import A2CTrainer as trainer
+    #elif alg_name == "DDPG":
+        #from ray.rllib.agents.ddpg.ddpg import DDPGTrainer as trainer
+    #elif alg_name == 'PG':
+        #from ray.rllib.algorithms. import PGTrainer as trainer
+    if alg_name == 'PPO':
+        from ray.rllib.algorithms.ppo import PPO as trainer
     elif alg_name == 'SAC':
-        from ray.rllib.agents.sac import SACTrainer as trainer
-    elif alg_name == 'TD3':
-        from ray.rllib.agents.ddpg.ddpg import TD3Trainer as trainer
+        from ray.rllib.algorithms.sac import SAC as trainer
+    #elif alg_name == 'TD3':
+        #from ray.rllib.agents.ddpg.ddpg import TD3Trainer as trainer
     else:
         ray.get(f.remote(alg_name))
         ray.get(f.remote(alg_name == "A2C"))

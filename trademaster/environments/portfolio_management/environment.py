@@ -10,7 +10,7 @@ from trademaster.utils import get_attr, print_metrics
 import pandas as pd
 from ..custom import Environments
 from ..builder import ENVIRONMENTS
-from gym import spaces
+from gymnasium import spaces
 from collections import OrderedDict
 """this environment is based on https://github.com/AI4Finance-Foundation/FinRL/blob/master/finrl/meta/env_portfolio_allocation/env_portfolio.py but 
 adding 2 additional features and 1 modification:

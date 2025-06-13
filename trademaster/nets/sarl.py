@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .builder import NETS
-from .custom import Net
+from .custom import Net # type: ignore
 
 
 @NETS.register_module()

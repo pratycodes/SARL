@@ -1,5 +1,5 @@
 from .builder import ENVIRONMENTS
-import gym
+import gymnasium as gym
 
 @ENVIRONMENTS.register_module()
 class Environments(gym.Env):

@@ -10,7 +10,7 @@ from trademaster.utils import get_attr, print_metrics
 import pandas as pd
 from ..custom import Environments
 from ..builder import ENVIRONMENTS
-from gym import spaces
+from gymnasium import spaces
 from collections import OrderedDict
 
 @ENVIRONMENTS.register_module()

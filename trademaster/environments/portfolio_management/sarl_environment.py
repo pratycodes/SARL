@@ -11,7 +11,7 @@ import pandas as pd
 from ..custom import Environments
 from ..builder import ENVIRONMENTS
 from trademaster.pretrained import pretrained
-from gym import spaces
+from gymnasium import spaces
 from collections import OrderedDict
 import pickle
 import os.path as osp
